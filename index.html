@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Web Terminal</title>
+  <title>Web Terminal Pro</title>
   <style>
     * {
       box-sizing: border-box;
@@ -22,8 +22,8 @@
     }
     .terminal {
       width: 100%;
-      max-width: 800px;
-      height: 500px;
+      max-width: 850px;
+      height: 520px;
       background: #161b22;
       border: 1px solid #30363d;
       border-radius: 8px;
@@ -54,8 +54,7 @@
     .title {
       color: #8b949e;
       font-size: 14px;
-      margin-left: auto;
-      margin-right: auto;
+      margin: 0 auto;
     }
     .terminal-body {
       padding: 15px;
@@ -65,7 +64,7 @@
       flex-direction: column;
     }
     .output {
-      margin-bottom: 10px;
+      margin-bottom: 8px;
       white-space: pre-wrap;
       word-break: break-all;
     }
@@ -100,17 +99,17 @@
       <div class="btn minimize"></div>
       <div class="btn maximize"></div>
     </div>
-    <div class="title">guest@github-pages:~</div>
+    <div class="title">guest@terminal:~</div>
   </div>
   <div class="terminal-body" id="terminal-body">
     <div class="output system-msg">
-Bienvenido a la Web Terminal v1.0.0
-Escribe <span style="color:#f2cc60;">'help'</span> para ver la lista de comandos disponibles.
---------------------------------------------------
+Sistema Virtual listo con soporte para LocalStorage.
+Escribe <span style="color:#f2cc60;">'help'</span> para ver la lista de comandos.
+----------------------------------------------------------------------
     </div>
     <div id="history"></div>
     <div class="input-line">
-      <span class="prompt">guest@web:~$</span>
+      <span class="prompt" id="prompt-label">guest@web:~#</span>
       <input type="text" id="command-input" autofocus autocomplete="off">
     </div>
   </div>
@@ -120,46 +119,193 @@ Escribe <span style="color:#f2cc60;">'help'</span> para ver la lista de comandos
   const input = document.getElementById('command-input');
   const history = document.getElementById('history');
   const terminalBody = document.getElementById('terminal-body');
+  const promptLabel = document.getElementById('prompt-label');
 
-  const commands = {
-    'help': 'Comandos disponibles:\n - help    : Muestra este mensaje\n - clear   : Limpia la pantalla\n - date    : Muestra la fecha y hora actual\n - echo    : Repite el texto que escribas (ej: echo hola)\n - repo    : Enlace al repositorio\n - matrix  : Mensaje especial',
-    'date': () => new Date().toLocaleString(),
-    'repo': 'Puedes ver el código de este proyecto en tu repositorio de GitHub.',
-    'matrix': 'Wake up, Neo... The Matrix has you.'
+  // Estructura por defecto para nuevos usuarios
+  const initialFileSystem = {
+    '~': {
+      type: 'dir',
+      content: {
+        'readme.txt': { type: 'file', content: '¡Bienvenido a la terminal interactiva persistente!' },
+        'proyectos': { type: 'dir', content: {} }
+      }
+    }
   };
+
+  // Cargar desde LocalStorage o inicializar
+  let fileSystem = JSON.parse(localStorage.getItem('web_terminal_fs')) || initialFileSystem;
+  let currentPath = ['~'];
+
+  // Función para guardar el estado en LocalStorage
+  function saveFileSystem() {
+    localStorage.setItem('web_terminal_fs', JSON.stringify(fileSystem));
+  }
+
+  function getCurrentDirectory() {
+    let current = fileSystem;
+    for (let dir of currentPath) {
+      if (!current[dir] || !current[dir].content) return null;
+      current = current[dir].content;
+    }
+    return current;
+  }
+
+  function updatePrompt() {
+    const pathStr = currentPath.join('/');
+    promptLabel.textContent = `guest@web:${pathStr}#`;
+  }
 
   input.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') {
       const fullCommand = input.value.trim();
-      const args = fullCommand.split(' ');
-      const cmd = args[0].toLowerCase();
-      
       if (fullCommand !== '') {
-        printLine(`guest@web:~$ ${fullCommand}`, 'prompt');
-        processCommand(cmd, args.slice(1).join(' '));
+        printLine(`${promptLabel.textContent} ${fullCommand}`, 'prompt');
+        processCommand(fullCommand);
       }
-
       input.value = '';
       terminalBody.scrollTop = terminalBody.scrollHeight;
     }
   });
 
-  function processCommand(cmd, textArgs) {
-    if (cmd === 'clear') {
-      history.innerHTML = '';
+  async function processCommand(rawInput) {
+    const parts = rawInput.split(' ');
+    const cmd = parts[0].toLowerCase();
+    const args = parts.slice(1);
+    const target = args[0];
+    const destination = args[1];
+    const currentDir = getCurrentDirectory();
+
+    if (!currentDir) {
+      printLine('Error crítico: Ruta actual inválida. Reiniciando ruta a ~', 'error');
+      currentPath = ['~'];
+      updatePrompt();
       return;
     }
 
-    if (cmd === 'echo') {
-      printLine(textArgs || '');
-      return;
-    }
+    switch (cmd) {
+      case 'help':
+        printLine(
+          `Comandos Disponibles:\n` +
+          ` - ls                  : Listar contenido del directorio\n` +
+          ` - cd <dir>            : Cambiar de directorio ('..' para volver)\n` +
+          ` - pwd                 : Mostrar ruta actual\n` +
+          ` - mkdir <nombre>      : Crear carpeta (se guarda automáticamente)\n` +
+          ` - touch <nombre>      : Crear archivo vacío (se guarda automáticamente)\n` +
+          ` - cat <archivo>       : Ver contenido del archivo\n` +
+          ` - mv <origen> <nuevo> : Renombrar o mover archivo/carpeta\n` +
+          ` - rm <nombre>         : Eliminar archivo o carpeta\n` +
+          ` - copy <texto>        : Copiar texto al portapapeles del sistema\n` +
+          ` - paste               : Pegar desde el portapapeles\n` +
+          ` - reset               : Restaurar el sistema a valores de fábrica\n` +
+          ` - clear               : Limpiar pantalla`
+        );
+        break;
 
-    if (commands[cmd]) {
-      const response = typeof commands[cmd] === 'function' ? commands[cmd]() : commands[cmd];
-      printLine(response);
-    } else {
-      printLine(`Comando no encontrado: '${cmd}'. Escribe 'help' para ver los comandos.`, 'error');
+      case 'ls':
+        const items = Object.keys(currentDir);
+        if (items.length === 0) {
+          printLine('(directorio vacío)', 'system-msg');
+        } else {
+          const formatted = items.map(name => {
+            return currentDir[name].type === 'dir' ? `[📁 ${name}]` : `📄 ${name}`;
+          }).join('  ');
+          printLine(formatted);
+        }
+        break;
+
+      case 'pwd':
+        printLine('/' + currentPath.join('/'));
+        break;
+
+      case 'cd':
+        if (!target || target === '~') {
+          currentPath = ['~'];
+        } else if (target === '..') {
+          if (currentPath.length > 1) currentPath.pop();
+        } else if (currentDir[target] && currentDir[target].type === 'dir') {
+          currentPath.push(target);
+        } else {
+          printLine(`cd: no existe el directorio: ${target}`, 'error');
+        }
+        updatePrompt();
+        break;
+
+      case 'mkdir':
+        if (!target) return printLine('Uso: mkdir <nombre_carpeta>', 'error');
+        if (currentDir[target]) return printLine(`El elemento '${target}' ya existe`, 'error');
+        currentDir[target] = { type: 'dir', content: {} };
+        saveFileSystem();
+        printLine(`Carpeta '${target}' creada exitosamente.`);
+        break;
+
+      case 'touch':
+        if (!target) return printLine('Uso: touch <nombre_archivo>', 'error');
+        if (currentDir[target]) return printLine(`El elemento '${target}' ya existe`, 'error');
+        currentDir[target] = { type: 'file', content: '' };
+        saveFileSystem();
+        printLine(`Archivo '${target}' creado exitosamente.`);
+        break;
+
+      case 'cat':
+        if (!target) return printLine('Uso: cat <nombre_archivo>', 'error');
+        if (!currentDir[target] || currentDir[target].type !== 'file') {
+          printLine(`cat: ${target}: No es un archivo válido`, 'error');
+        } else {
+          printLine(currentDir[target].content || '(archivo vacío)');
+        }
+        break;
+
+      case 'mv':
+        if (!target || !destination) return printLine('Uso: mv <origen> <nuevo_nombre>', 'error');
+        if (!currentDir[target]) return printLine(`mv: no existe '${target}'`, 'error');
+        currentDir[destination] = currentDir[target];
+        delete currentDir[target];
+        saveFileSystem();
+        printLine(`Renombrado '${target}' a '${destination}'`);
+        break;
+
+      case 'rm':
+        if (!target) return printLine('Uso: rm <nombre>', 'error');
+        if (!currentDir[target]) return printLine(`rm: no existe '${target}'`, 'error');
+        delete currentDir[target];
+        saveFileSystem();
+        printLine(`Eliminado '${target}'`);
+        break;
+
+      case 'copy':
+        const textToCopy = args.join(' ');
+        if (!textToCopy) return printLine('Uso: copy <texto_a_copiar>', 'error');
+        try {
+          await navigator.clipboard.writeText(textToCopy);
+          printLine('✓ Texto copiado al portapapeles del sistema');
+        } catch (err) {
+          printLine('Error al acceder al portapapeles', 'error');
+        }
+        break;
+
+      case 'paste':
+        try {
+          const text = await navigator.clipboard.readText();
+          printLine(`Portapapeles: ${text}`);
+        } catch (err) {
+          printLine('Error al leer el portapapeles (verifica permisos del navegador)', 'error');
+        }
+        break;
+
+      case 'reset':
+        localStorage.removeItem('web_terminal_fs');
+        fileSystem = JSON.parse(JSON.stringify(initialFileSystem));
+        currentPath = ['~'];
+        updatePrompt();
+        printLine('Sistema de archivos restaurado al estado de fábrica.');
+        break;
+
+      case 'clear':
+        history.innerHTML = '';
+        break;
+
+      default:
+        printLine(`Comando no reconocido: '${cmd}'. Escribe 'help'.`, 'error');
     }
   }
 
@@ -170,7 +316,6 @@ Escribe <span style="color:#f2cc60;">'help'</span> para ver la lista de comandos
     history.appendChild(div);
   }
 
-  // Mantener el foco en el input al hacer clic en la terminal
   document.querySelector('.terminal').addEventListener('click', () => input.focus());
 </script>
 
