@@ -3,13 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Web Terminal Pro</title>
+  <title>Web Terminal Pro + Python (Pyodide)</title>
+  <!-- Intérprete de Python en WebAssembly -->
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
   <style>
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       background-color: #0d1117;
       color: #00ff66;
@@ -23,7 +21,7 @@
     .terminal {
       width: 100%;
       max-width: 850px;
-      height: 520px;
+      height: 540px;
       background: #161b22;
       border: 1px solid #30363d;
       border-radius: 8px;
@@ -39,23 +37,12 @@
       align-items: center;
       border-bottom: 1px solid #30363d;
     }
-    .buttons {
-      display: flex;
-      gap: 8px;
-    }
-    .btn {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-    }
+    .buttons { display: flex; gap: 8px; }
+    .btn { width: 12px; height: 12px; border-radius: 50%; }
     .close { background-color: #ff5f56; }
     .minimize { background-color: #ffbd2e; }
     .maximize { background-color: #27c93f; }
-    .title {
-      color: #8b949e;
-      font-size: 14px;
-      margin: 0 auto;
-    }
+    .title { color: #8b949e; font-size: 14px; margin: 0 auto; }
     .terminal-body {
       padding: 15px;
       flex-grow: 1;
@@ -63,20 +50,9 @@
       display: flex;
       flex-direction: column;
     }
-    .output {
-      margin-bottom: 8px;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-    .input-line {
-      display: flex;
-      align-items: center;
-    }
-    .prompt {
-      color: #58a6ff;
-      margin-right: 8px;
-      font-weight: bold;
-    }
+    .output { margin-bottom: 8px; white-space: pre-wrap; word-break: break-all; }
+    .input-line { display: flex; align-items: center; }
+    .prompt { color: #58a6ff; margin-right: 8px; font-weight: bold; }
     input {
       background: transparent;
       border: none;
@@ -87,6 +63,7 @@
       outline: none;
     }
     .system-msg { color: #8b949e; }
+    .py-msg { color: #f2cc60; }
     .error { color: #ff7b72; }
   </style>
 </head>
@@ -102,15 +79,14 @@
     <div class="title">guest@terminal:~</div>
   </div>
   <div class="terminal-body" id="terminal-body">
-    <div class="output system-msg">
-Sistema Virtual listo con soporte para LocalStorage.
-Escribe <span style="color:#f2cc60;">'help'</span> para ver la lista de comandos.
+    <div class="output system-msg" id="status-msg">
+Cargando motor de Python (Pyodide)... Por favor espera unos segundos.
 ----------------------------------------------------------------------
     </div>
     <div id="history"></div>
     <div class="input-line">
       <span class="prompt" id="prompt-label">guest@web:~#</span>
-      <input type="text" id="command-input" autofocus autocomplete="off">
+      <input type="text" id="command-input" autofocus autocomplete="off" disabled>
     </div>
   </div>
 </div>
@@ -120,23 +96,38 @@ Escribe <span style="color:#f2cc60;">'help'</span> para ver la lista de comandos
   const history = document.getElementById('history');
   const terminalBody = document.getElementById('terminal-body');
   const promptLabel = document.getElementById('prompt-label');
+  const statusMsg = document.getElementById('status-msg');
 
-  // Estructura por defecto para nuevos usuarios
+  let pyodide = null;
+
+  // Cargar Pyodide en segundo plano
+  async function initPython() {
+    try {
+      pyodide = await loadPyodide();
+      statusMsg.innerHTML = `Intérprete Python 3.11 cargado en WebAssembly.\\nEscribe <span style="color:#f2cc60;">'help'</span> para ver los comandos disponibles.\\n----------------------------------------------------------------------`;
+      input.disabled = false;
+      input.focus();
+    } catch (err) {
+      statusMsg.textContent = 'Error al cargar Python.';
+      input.disabled = false;
+    }
+  }
+
+  initPython();
+
   const initialFileSystem = {
     '~': {
       type: 'dir',
       content: {
-        'readme.txt': { type: 'file', content: '¡Bienvenido a la terminal interactiva persistente!' },
+        'hola.py': { type: 'file', content: 'print("¡Hola desde Python en la terminal web!")\nprint(f"2 + 2 = {2 + 2}")' },
         'proyectos': { type: 'dir', content: {} }
       }
     }
   };
 
-  // Cargar desde LocalStorage o inicializar
   let fileSystem = JSON.parse(localStorage.getItem('web_terminal_fs')) || initialFileSystem;
   let currentPath = ['~'];
 
-  // Función para guardar el estado en LocalStorage
   function saveFileSystem() {
     localStorage.setItem('web_terminal_fs', JSON.stringify(fileSystem));
   }
@@ -151,8 +142,7 @@ Escribe <span style="color:#f2cc60;">'help'</span> para ver la lista de comandos
   }
 
   function updatePrompt() {
-    const pathStr = currentPath.join('/');
-    promptLabel.textContent = `guest@web:${pathStr}#`;
+    promptLabel.textContent = `guest@web:${currentPath.join('/')}#`;
   }
 
   input.addEventListener('keydown', function(e) {
@@ -176,7 +166,7 @@ Escribe <span style="color:#f2cc60;">'help'</span> para ver la lista de comandos
     const currentDir = getCurrentDirectory();
 
     if (!currentDir) {
-      printLine('Error crítico: Ruta actual inválida. Reiniciando ruta a ~', 'error');
+      printLine('Ruta inválida. Volviendo a ~', 'error');
       currentPath = ['~'];
       updatePrompt();
       return;
@@ -186,19 +176,51 @@ Escribe <span style="color:#f2cc60;">'help'</span> para ver la lista de comandos
       case 'help':
         printLine(
           `Comandos Disponibles:\n` +
+          ` - python <archivo.py> : Ejecutar archivo Python o comando\n` +
+          ` - write <file> <text> : Escribir contenido rápido en un archivo\n` +
           ` - ls                  : Listar contenido del directorio\n` +
-          ` - cd <dir>            : Cambiar de directorio ('..' para volver)\n` +
-          ` - pwd                 : Mostrar ruta actual\n` +
-          ` - mkdir <nombre>      : Crear carpeta (se guarda automáticamente)\n` +
-          ` - touch <nombre>      : Crear archivo vacío (se guarda automáticamente)\n` +
+          ` - cd <dir>            : Cambiar de directorio\n` +
+          ` - mkdir <nombre>      : Crear carpeta\n` +
+          ` - touch <nombre>      : Crear archivo vacío\n` +
           ` - cat <archivo>       : Ver contenido del archivo\n` +
-          ` - mv <origen> <nuevo> : Renombrar o mover archivo/carpeta\n` +
           ` - rm <nombre>         : Eliminar archivo o carpeta\n` +
-          ` - copy <texto>        : Copiar texto al portapapeles del sistema\n` +
-          ` - paste               : Pegar desde el portapapeles\n` +
-          ` - reset               : Restaurar el sistema a valores de fábrica\n` +
-          ` - clear               : Limpiar pantalla`
+          ` - clear               : Limpiar pantalla\n` +
+          ` - reset               : Restaurar sistema`
         );
+        break;
+
+      case 'python':
+      case 'python3':
+        if (!pyodide) return printLine('Python se está inicializando...', 'error');
+        if (!target) return printLine('Uso: python <script.py> o python "print(\'hola\')"', 'error');
+
+        let codeToRun = '';
+        if (currentDir[target] && currentDir[target].type === 'file') {
+          codeToRun = currentDir[target].content;
+        } else {
+          codeToRun = args.join(' ');
+        }
+
+        try {
+          pyodide.setStdout({
+            batched: (str) => printLine(str, 'py-msg')
+          });
+          
+          let result = await pyodide.runPythonAsync(codeToRun);
+          if (result !== undefined) {
+            printLine(String(result), 'py-msg');
+          }
+        } catch (err) {
+          printLine(`PythonError: ${err.message}`, 'error');
+        }
+        break;
+
+      case 'write':
+        if (!target) return printLine('Uso: write <archivo.py> <contenido>', 'error');
+        const contentToWrite = args.slice(1).join(' ');
+        currentDir[target] = { type: 'file', content: contentToWrite };
+        saveFileSystem();
+        printLine(`Guardado contenido en '${target}'`);
         break;
 
       case 'ls':
@@ -225,71 +247,39 @@ Escribe <span style="color:#f2cc60;">'help'</span> para ver la lista de comandos
         } else if (currentDir[target] && currentDir[target].type === 'dir') {
           currentPath.push(target);
         } else {
-          printLine(`cd: no existe el directorio: ${target}`, 'error');
+          printLine(`cd: no existe: ${target}`, 'error');
         }
         updatePrompt();
         break;
 
       case 'mkdir':
-        if (!target) return printLine('Uso: mkdir <nombre_carpeta>', 'error');
-        if (currentDir[target]) return printLine(`El elemento '${target}' ya existe`, 'error');
+        if (!target) return printLine('Uso: mkdir <carpeta>', 'error');
         currentDir[target] = { type: 'dir', content: {} };
         saveFileSystem();
-        printLine(`Carpeta '${target}' creada exitosamente.`);
+        printLine(`Carpeta '${target}' creada.`);
         break;
 
       case 'touch':
-        if (!target) return printLine('Uso: touch <nombre_archivo>', 'error');
-        if (currentDir[target]) return printLine(`El elemento '${target}' ya existe`, 'error');
+        if (!target) return printLine('Uso: touch <archivo>', 'error');
         currentDir[target] = { type: 'file', content: '' };
         saveFileSystem();
-        printLine(`Archivo '${target}' creado exitosamente.`);
+        printLine(`Archivo '${target}' creado.`);
         break;
 
       case 'cat':
-        if (!target) return printLine('Uso: cat <nombre_archivo>', 'error');
-        if (!currentDir[target] || currentDir[target].type !== 'file') {
-          printLine(`cat: ${target}: No es un archivo válido`, 'error');
-        } else {
-          printLine(currentDir[target].content || '(archivo vacío)');
-        }
-        break;
-
-      case 'mv':
-        if (!target || !destination) return printLine('Uso: mv <origen> <nuevo_nombre>', 'error');
-        if (!currentDir[target]) return printLine(`mv: no existe '${target}'`, 'error');
-        currentDir[destination] = currentDir[target];
-        delete currentDir[target];
-        saveFileSystem();
-        printLine(`Renombrado '${target}' a '${destination}'`);
+        if (!target || !currentDir[target]) return printLine(`cat: no existe '${target}'`, 'error');
+        printLine(currentDir[target].content || '(vacío)');
         break;
 
       case 'rm':
-        if (!target) return printLine('Uso: rm <nombre>', 'error');
-        if (!currentDir[target]) return printLine(`rm: no existe '${target}'`, 'error');
+        if (!target || !currentDir[target]) return printLine(`rm: no existe '${target}'`, 'error');
         delete currentDir[target];
         saveFileSystem();
         printLine(`Eliminado '${target}'`);
         break;
 
-      case 'copy':
-        const textToCopy = args.join(' ');
-        if (!textToCopy) return printLine('Uso: copy <texto_a_copiar>', 'error');
-        try {
-          await navigator.clipboard.writeText(textToCopy);
-          printLine('✓ Texto copiado al portapapeles del sistema');
-        } catch (err) {
-          printLine('Error al acceder al portapapeles', 'error');
-        }
-        break;
-
-      case 'paste':
-        try {
-          const text = await navigator.clipboard.readText();
-          printLine(`Portapapeles: ${text}`);
-        } catch (err) {
-          printLine('Error al leer el portapapeles (verifica permisos del navegador)', 'error');
-        }
+      case 'clear':
+        history.innerHTML = '';
         break;
 
       case 'reset':
@@ -297,11 +287,7 @@ Escribe <span style="color:#f2cc60;">'help'</span> para ver la lista de comandos
         fileSystem = JSON.parse(JSON.stringify(initialFileSystem));
         currentPath = ['~'];
         updatePrompt();
-        printLine('Sistema de archivos restaurado al estado de fábrica.');
-        break;
-
-      case 'clear':
-        history.innerHTML = '';
+        printLine('Sistema reiniciado.');
         break;
 
       default:
