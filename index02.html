@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web Terminal (Xterm + jQuery + Python)</title>
+
+  <!-- 1. jQuery -->
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+
+  <!-- 2. Xterm.js (Renderizado visual de terminal) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+
+  <!-- 3. Pyodide (Motor de Python en WebAssembly) -->
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: #0d1117;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+      font-family: monospace;
+    }
+    .terminal-window {
+      width: 100%;
+      max-width: 850px;
+      height: 520px;
+      background: #000;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .terminal-header {
+      background: #21262d;
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid #30363d;
+    }
+    .buttons { display: flex; gap: 8px; }
+    .btn { width: 12px; height: 12px; border-radius: 50%; }
+    .close { background-color: #ff5f56; }
+    .minimize { background-color: #ffbd2e; }
+    .maximize { background-color: #27c93f; }
+    .title { color: #8b949e; font-size: 13px; margin: 0 auto; }
+    #terminal-container {
+      flex-grow: 1;
+      padding: 10px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="terminal-window">
+  <div class="terminal-header">
+    <div class="buttons">
+      <div class="btn close"></div>
+      <div class="btn minimize"></div>
+      <div class="btn maximize"></div>
+    </div>
+    <div class="title">guest@web-terminal:~</div>
+  </div>
+  <div id="terminal-container"></div>
+</div>
+
+<script>
+  let pyodide = null;
+
+  // --- Sistema de Archivos en LocalStorage ---
+  const initialFS = {
+    '~': {
+      type: 'dir',
+      content: {
+        'hola.py': { type: 'file', content: 'print("¡Hola desde Python con Xterm.js!")\nprint(f"Resultado: {5 * 5}")' },
+        'notas.txt': { type: 'file', content: 'Bienvenido a tu terminal estática con Xterm y Pyodide.' }
+      }
+    }
+  };
+
+  let fileSystem = JSON.parse(localStorage.getItem('web_terminal_fs')) || initialFS;
+  let currentPath = ['~'];
+
+  function saveFS() {
+    localStorage.setItem('web_terminal_fs', JSON.stringify(fileSystem));
+  }
+
+  function getCurrentDir() {
+    let curr = fileSystem;
+    for (let d of currentPath) {
+      if (!curr[d] || !curr[d].content) return null;
+      curr = curr[d].content;
+    }
+    return curr;
+  }
+
+  // --- Inicialización de Xterm.js ---
+  const term = new Terminal({
+    cursorBlink: true,
+    fontSize: 15,
+    fontFamily: 'Courier New, monospace',
+    theme: {
+      background: '#000000',
+      foreground: '#00ff66',
+      cursor: '#00ff66'
+    }
+  });
+
+  term.open(document.getElementById('terminal-container'));
+
+  function printPrompt() {
+    const promptStr = `\r\n\x1b[1;34mguest@web:${currentPath.join('/')}#\x1b[0m `;
+    term.write(promptStr);
+  }
+
+  term.writeln('\x1b[1;33mCargando motor de Python (Pyodide)... Por favor espera.\x1b[0m');
+
+  // Inicializar Python
+  async function initPy() {
+    try {
+      pyodide = await loadPyodide();
+      term.writeln('\x1b[1;32m✓ Entorno listo (Xterm.js + jQuery + Python 3.11).\x1b[0m');
+      term.writeln('Escribe \x1b[1;36mhelp\x1b[0m para ver los comandos disponles.');
+      printPrompt();
+    } catch (e) {
+      term.writeln('\x1b[1;31mError al inicializar Python.\x1b[0m');
+      printPrompt();
+    }
+  }
+  initPy();
+
+  // --- Captura de entrada del teclado ---
+  let inputBuffer = '';
+
+  term.onData(data => {
+    const code = data.charCodeAt(0);
+
+    // Enter
+    if (code === 13) {
+      term.write('\r\n');
+      const cmd = inputBuffer.trim();
+      inputBuffer = '';
+      if (cmd !== '') {
+        processCommand(cmd).then(() => printPrompt());
+      } else {
+        printPrompt();
+      }
+    } 
+    // Backspace
+    else if (code === 127) {
+      if (inputBuffer.length > 0) {
+        inputBuffer = inputBuffer.slice(0, -1);
+        term.write('\b \b');
+      }
+    } 
+    // Caracteres imprimibles
+    else if (code >= 32) {
+      inputBuffer += data;
+      term.write(data);
+    }
+  });
+
+  // --- Procesador de Comandos ---
+  async function processCommand(rawInput) {
+    const parts = rawInput.split(' ');
+    const cmd = parts[0].toLowerCase();
+    const args = parts.slice(1);
+    const target = args[0];
+    const currDir = getCurrentDir();
+
+    if (!currDir) {
+      term.writeln('\x1b[1;31mRuta no encontrada. Reseteando a ~\x1b[0m');
+      currentPath = ['~'];
+      return;
+    }
+
+    switch (cmd) {
+      case 'help':
+        term.writeln('Comandos disponibles:');
+        term.writeln('  python <file.py> : Ejecutar archivo Python');
+        term.writeln('  write <file> <txt>: Guardar texto en un archivo');
+        term.writeln('  ls               : Listar contenido');
+        term.writeln('  cd <dir>         : Cambiar de directorio');
+        term.writeln('  mkdir <dir>      : Crear carpeta');
+        term.writeln('  touch <file>     : Crear archivo vacío');
+        term.writeln('  cat <file>       : Leer archivo');
+        term.writeln('  rm <name>        : Borrar archivo/carpeta');
+        term.writeln('  clear            : Limpiar la pantalla');
+        term.writeln('  reset            : Restaurar sistema de fábrica');
+        break;
+
+      case 'ls':
+        const keys = Object.keys(currDir);
+        if (keys.length === 0) {
+          term.writeln('\x1b[1;30m(directorio vacío)\x1b[0m');
+        } else {
+          const out = keys.map(k => currDir[k].type === 'dir' ? `\x1b[1;34m[📁 ${k}]\x1b[0m` : `📄 ${k}`).join('  ');
+          term.writeln(out);
+        }
+        break;
+
+      case 'cd':
+        if (!target || target === '~') {
+          currentPath = ['~'];
+        } else if (target === '..') {
+          if (currentPath.length > 1) currentPath.pop();
+        } else if (currDir[target] && currDir[target].type === 'dir') {
+          currentPath.push(target);
+        } else {
+          term.writeln(`\x1b[1;31mcd: no existe ${target}\x1b[0m`);
+        }
+        break;
+
+      case 'mkdir':
+        if (!target) return term.writeln('Uso: mkdir <carpeta>');
+        currDir[target] = { type: 'dir', content: {} };
+        saveFS();
+        term.writeln(`Carpeta '${target}' creada.`);
+        break;
+
+      case 'touch':
+        if (!target) return term.writeln('Uso: touch <archivo>');
+        currDir[target] = { type: 'file', content: '' };
+        saveFS();
+        term.writeln(`Archivo '${target}' creado.`);
+        break;
+
+      case 'write':
+        if (!target) return term.writeln('Uso: write <archivo> <contenido>');
+        const text = args.slice(1).join(' ');
+        currDir[target] = { type: 'file', content: text };
+        saveFS();
+        term.writeln(`Contenido guardado en '${target}'.`);
+        break;
+
+      case 'cat':
+        if (!target || !currDir[target]) return term.writeln(`cat: no existe '${target}'`);
+        term.writeln(currDir[target].content || '(vacío)');
+        break;
+
+      case 'rm':
+        if (!target || !currDir[target]) return term.writeln(`rm: no existe '${target}'`);
+        delete currDir[target];
+        saveFS();
+        term.writeln(`'${target}' eliminado.`);
+        break;
+
+      case 'python':
+      case 'python3':
+        if (!pyodide) return term.writeln('\x1b[1;31mPython aún no ha terminado de cargar...\x1b[0m');
+        if (!target) return term.writeln('Uso: python <archivo.py> o python "print(123)"');
+
+        let code = (currDir[target] && currDir[target].type === 'file') ? currDir[target].content : args.join(' ');
+
+        try {
+          pyodide.setStdout({
+            batched: (str) => term.writeln(`\x1b[1;33m${str}\x1b[0m`)
+          });
+          let res = await pyodide.runPythonAsync(code);
+          if (res !== undefined) term.writeln(`\x1b[1;33m${res}\x1b[0m`);
+        } catch (e) {
+          term.writeln(`\x1b[1;31mPythonError: ${e.message}\x1b[0m`);
+        }
+        break;
+
+      case 'clear':
+        term.clear();
+        break;
+
+      case 'reset':
+        localStorage.removeItem('web_terminal_fs');
+        fileSystem = JSON.parse(JSON.stringify(initialFS));
+        currentPath = ['~'];
+        term.writeln('Sistema reiniciado.');
+        break;
+
+      default:
+        term.writeln(`\x1b[1;31mComando no reconocido: '${cmd}'\x1b[0m`);
+    }
+  }
+
+  // Enfocar terminal al hacer clic usando jQuery
+  $(document).ready(function() {
+    $('.terminal-window').on('click', function() {
+      term.focus();
+    });
+  });
+</script>
+
+</body>
+</html>
