@@ -1,2 +1,2 @@
 # terminal
-Is a terminal foe use.
+Is a terminal for use.
