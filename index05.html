@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Linux Real en el Navegador (v86)</title>
+
+  <!-- Script de v86 -->
+  <script src="https://copy.sh/v86/build/v86_all.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: #0d1117;
+      color: #00ff66;
+      font-family: 'Courier New', Courier, monospace;
+      padding: 20px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .terminal {
+      width: 100%;
+      max-width: 850px;
+      height: 540px;
+      background: #000000;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .terminal-header {
+      background: #21262d;
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid #30363d;
+    }
+    .buttons { display: flex; gap: 8px; }
+    .btn { width: 12px; height: 12px; border-radius: 50%; }
+    .close { background-color: #ff5f56; }
+    .minimize { background-color: #ffbd2e; }
+    .maximize { background-color: #27c93f; }
+    .title { color: #8b949e; font-size: 14px; margin: 0 auto; }
+    
+    #screen_container {
+      flex-grow: 1;
+      padding: 10px;
+      overflow: auto;
+      white-space: pre;
+      font-family: monospace;
+      color: #00ff66;
+    }
+
+    /* Mensajes de carga */
+    .log-line { margin-bottom: 4px; }
+    .success { color: #27c93f; }
+    .info { color: #ffbd2e; }
+  </style>
+</head>
+<body>
+
+<div class="terminal">
+  <div class="terminal-header">
+    <div class="buttons">
+      <div class="btn close"></div>
+      <div class="btn minimize"></div>
+      <div class="btn maximize"></div>
+    </div>
+    <div class="title">root@v86-linux:~</div>
+  </div>
+
+  <!-- PANTALLA Y CONSOLA DE ESTADO -->
+  <div id="screen_container">
+    <div id="status-log">
+      <div class="log-line info">[1/4] Inicializando entorno v86...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const statusLog = document.getElementById("status-log");
+
+  function logMessage(text, type = '') {
+    const line = document.createElement("div");
+    line.className = `log-line ${type}`;
+    line.textContent = text;
+    statusLog.appendChild(line);
+  }
+
+  // Inicialización del emulador v86
+  const emulator = new V86Starter({
+    wasm_path: "https://copy.sh/v86/build/v86.wasm",
+    memory_size: 128 * 1024 * 1024,
+    vga_bios: { url: "https://copy.sh/v86/bios/vgabios.bin" },
+    bios: { url: "https://copy.sh/v86/bios/seabios.bin" },
+    cdrom: { url: "https://copy.sh/v86/images/linux.iso" },
+    autostart: true,
+    screen_container: document.getElementById("screen_container")
+  });
+
+  // Evento: Progreso de descarga de componentes (ISO, BIOS, WASM)
+  emulator.add_listener("download-progress", function(e) {
+    if (e.lengthComputable) {
+      const percent = Math.round((e.loaded / e.total) * 100);
+      const file = e.file_name || "componentes";
+      statusLog.lastElementChild.textContent = `[2/4] Descargando ${file}: ${percent}% (${Math.round(e.loaded/1024/1024)}MB / ${Math.round(e.total/1024/1024)}MB)`;
+    } else {
+      logMessage(`[2/4] Descargando componentes del sistema...`, 'info');
+    }
+  });
+
+  // Evento: Descarga finalizada, preparando CPU virtual
+  emulator.add_listener("download-error", function(e) {
+    logMessage(`[ERROR] Fallo la descarga de los archivos del sistema.`, 'close');
+  });
+
+  // Evento: La VM ya está lista y la CPU comenzó a ejecutar el Kernel
+  emulator.add_listener("emulator-ready", function() {
+    logMessage("[3/4] Carga de memoria RAM y BIOS completa.", "success");
+    logMessage("[4/4] Iniciando boot del Kernel de Linux...", "success");
+    logMessage("--------------------------------------------------", "info");
+  });
+</script>
+
+</body>
+</html>
