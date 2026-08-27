@@ -1,1 +1,387 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web Terminal Pro + Python</title>
+  <!-- Cargamos Pyodide desde CDN -->
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+  <script src="https://copy.sh/v86/build/v86_all.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: #0d1117;
+      color: #00ff66;
+      font-family: 'Courier New', Courier, monospace;
+      padding: 20px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .terminal {
+      width: 100%;
+      max-width: 850px;
+      height: 540px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .terminal-header {
+      background: #21262d;
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid #30363d;
+    }
+    .buttons { display: flex; gap: 8px; }
+    .btn { width: 12px; height: 12px; border-radius: 50%; }
+    .close { background-color: #ff5f56; }
+    .minimize { background-color: #ffbd2e; }
+    .maximize { background-color: #27c93f; }
+    .title { color: #8b949e; font-size: 14px; margin: 0 auto; }
+    .terminal-body {
+      padding: 15px;
+      flex-grow: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+    .output { margin-bottom: 8px; white-space: pre-wrap; word-break: break-all; }
+    .input-line { display: flex; align-items: center; }
+    .prompt { color: #58a6ff; margin-right: 8px; font-weight: bold; }
+    input {
+      background: transparent;
+      border: none;
+      color: #00ff66;
+      font-family: inherit;
+      font-size: 16px;
+      flex-grow: 1;
+      outline: none;
+    }
+    .system-msg { color: #8b949e; }
+    .py-msg { color: #f2cc60; }
+    .error { color: #ff7b72; }
+  </style>
+</head>
+<body>
 
+<div class="terminal">
+  <div class="terminal-header">
+    <div class="buttons">
+      <div class="btn close"></div>
+      <div class="btn minimize"></div>
+      <div class="btn maximize"></div>
+    </div>
+    <div class="title">guest@terminal:~</div>
+  </div>
+  <div class="terminal-body" id="terminal-body">
+    <div class="output system-msg" id="status-msg">
+Cargando intérprete de Python (Pyodide)... Por favor espera unos segundos.
+----------------------------------------------------------------------
+    </div>
+    <div id="history"></div>
+    <div class="input-line">
+      <span class="prompt" id="prompt-label">guest@web:~#</span>
+      <input type="text" id="command-input" autofocus autocomplete="off" disabled>
+    </div>
+  </div>
+</div>
+
+<script>
+  const input = document.getElementById('command-input');
+  const history = document.getElementById('history');
+  const terminalBody = document.getElementById('terminal-body');
+  const promptLabel = document.getElementById('prompt-label');
+  const statusMsg = document.getElementById('status-msg');
+
+  let pyodide = null;
+
+  // Cargar Pyodide
+  async function initPython() {
+    try {
+      pyodide = await loadPyodide();
+      statusMsg.innerHTML = `Intérprete Python 3.11 listo (WebAssembly).\nEscribe <span style="color:#f2cc60;">'help'</span> para ver los comandos.\nAtajos: [Ctrl+C] Copiar | [Ctrl+V] Pegar | [Ctrl+X] Cortar | [↑/↓] Historial\n----------------------------------------------------------------------`;
+      input.disabled = false;
+      input.focus();
+    } catch (err) {
+      statusMsg.textContent = 'Error al cargar Pyodide. Modo básico activo.';
+      input.disabled = false;
+    }
+  }
+
+  initPython();
+
+  // Historial de comandos ejecutados
+  let commandHistory = [];
+  let historyIndex = -1;
+
+  // Sistema de Archivos con LocalStorage
+  const initialFileSystem = {
+    '~': {
+      type: 'dir',
+      content: {
+        'hola.py': { type: 'file', content: 'print("¡Hola desde Python!")\nprint(f"2 + 2 = {2 + 2}")' },
+        'proyectos': { type: 'dir', content: {} }
+      }
+    }
+  };
+
+  let fileSystem = JSON.parse(localStorage.getItem('web_terminal_fs')) || initialFileSystem;
+  let currentPath = ['~'];
+
+  function saveFileSystem() {
+    localStorage.setItem('web_terminal_fs', JSON.stringify(fileSystem));
+  }
+
+  function getCurrentDirectory() {
+    let current = fileSystem;
+    for (let dir of currentPath) {
+      if (!current[dir] || !current[dir].content) return null;
+      current = current[dir].content;
+    }
+    return current;
+  }
+
+  function updatePrompt() {
+    promptLabel.textContent = `guest@web:${currentPath.join('/')}#`;
+  }
+
+  // Captura de atajos de teclado y eventos
+  input.addEventListener('keydown', async function(e) {
+    // Flecha Arriba: Recuperar comando anterior
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (commandHistory.length > 0 && historyIndex > 0) {
+        historyIndex--;
+        input.value = commandHistory[historyIndex];
+      }
+    }
+    // Flecha Abajo: Avanzar en el historial
+    else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (historyIndex < commandHistory.length - 1) {
+        historyIndex++;
+        input.value = commandHistory[historyIndex];
+      } else {
+        historyIndex = commandHistory.length;
+        input.value = '';
+      }
+    }
+    // Ctrl + C: Copiar
+    else if (e.ctrlKey && e.key.toLowerCase() === 'c') {
+      const selectedText = window.getSelection().toString();
+      const textToCopy = selectedText || input.value;
+      if (textToCopy) {
+        await navigator.clipboard.writeText(textToCopy);
+      }
+    }
+    // Ctrl + X: Cortar
+    else if (e.ctrlKey && e.key.toLowerCase() === 'x') {
+      if (input.value) {
+        await navigator.clipboard.writeText(input.value);
+        input.value = '';
+      }
+    }
+    // Ctrl + V: Pegar
+    else if (e.ctrlKey && e.key.toLowerCase() === 'v') {
+      e.preventDefault();
+      try {
+        const text = await navigator.clipboard.readText();
+        const start = input.selectionStart;
+        const end = input.selectionEnd;
+        input.value = input.value.substring(0, start) + text + input.value.substring(end);
+        input.selectionStart = input.selectionEnd = start + text.length;
+      } catch (err) {
+        // Si el navegador bloquea permisos explícitos de lectura
+      }
+    }
+    // Enter: Ejecutar comando
+    else if (e.key === 'Enter') {
+      const fullCommand = input.value.trim();
+      if (fullCommand !== '') {
+        commandHistory.push(fullCommand);
+        historyIndex = commandHistory.length;
+        printLine(`${promptLabel.textContent} ${fullCommand}`, 'prompt');
+        await processCommand(fullCommand);
+      }
+      input.value = '';
+      terminalBody.scrollTop = terminalBody.scrollHeight;
+    }
+  });
+
+  async function processCommand(rawInput) {
+    const parts = rawInput.split(' ');
+    const cmd = parts[0].toLowerCase();
+    const args = parts.slice(1);
+    const target = args[0];
+    const destination = args[1];
+    const currentDir = getCurrentDirectory();
+
+    if (!currentDir) {
+      printLine('Ruta inválida. Volviendo a ~', 'error');
+      currentPath = ['~'];
+      updatePrompt();
+      return;
+    }
+
+    switch (cmd) {
+      case 'help':
+        printLine(
+          `Comandos Disponibles:\n` +
+          ` - python <archivo.py> : Ejecutar un archivo o código Python\n` +
+          ` - write <file> <text> : Escribir texto en un archivo\n` +
+          ` - ls                  : Listar contenido del directorio\n` +
+          ` - cd <dir>            : Cambiar de directorio\n` +
+          ` - mkdir <nombre>      : Crear carpeta\n` +
+          ` - touch <nombre>      : Crear archivo vacío\n` +
+          ` - cat <archivo>       : Ver contenido del archivo\n` +
+          ` - mv <origen> <nuevo> : Mover o renombrar\n` +
+          ` - rm <nombre>         : Eliminar archivo o carpeta\n` +
+          ` - clear               : Limpiar pantalla\n` +
+          ` - reset               : Restaurar sistema a valores iniciales`
+        );
+        break;
+
+      case 'python':
+      case 'python3':
+        if (!pyodide) return printLine('Python se está cargando...', 'error');
+        if (!target) return printLine('Uso: python <archivo.py> o python "print(123)"', 'error');
+
+        let codeToRun = '';
+        if (currentDir[target] && currentDir[target].type === 'file') {
+          codeToRun = currentDir[target].content;
+        } else {
+          codeToRun = args.join(' ');
+        }
+
+        try {
+          pyodide.setStdout({
+            batched: (str) => printLine(str, 'py-msg')
+          });
+          
+          let result = await pyodide.runPythonAsync(codeToRun);
+          if (result !== undefined) {
+            printLine(String(result), 'py-msg');
+          }
+        } catch (err) {
+          printLine(`PythonError: ${err.message}`, 'error');
+        }
+        break;
+
+      case 'write':
+        if (!target) return printLine('Uso: write <archivo.py> <contenido>', 'error');
+        const contentToWrite = args.slice(1).join(' ');
+        currentDir[target] = { type: 'file', content: contentToWrite };
+        saveFileSystem();
+        printLine(`Guardado contenido en '${target}'`);
+        break;
+
+      case 'ls':
+        const items = Object.keys(currentDir);
+        if (items.length === 0) {
+          printLine('(directorio vacío)', 'system-msg');
+        } else {
+          const formatted = items.map(name => {
+            return currentDir[name].type === 'dir' ? `[📁 ${name}]` : `📄 ${name}`;
+          }).join('  ');
+          printLine(formatted);
+        }
+        break;
+
+      case 'pwd':
+        printLine('/' + currentPath.join('/'));
+        break;
+
+      case 'cd':
+        if (!target || target === '~') {
+          currentPath = ['~'];
+        } else if (target === '..') {
+          if (currentPath.length > 1) currentPath.pop();
+        } else if (currentDir[target] && currentDir[target].type === 'dir') {
+          currentPath.push(target);
+        } else {
+          printLine(`cd: no existe: ${target}`, 'error');
+        }
+        updatePrompt();
+        break;
+
+      case 'mkdir':
+        if (!target) return printLine('Uso: mkdir <carpeta>', 'error');
+        currentDir[target] = { type: 'dir', content: {} };
+        saveFileSystem();
+        printLine(`Carpeta '${target}' creada.`);
+        break;
+
+      case 'touch':
+        if (!target) return printLine('Uso: touch <archivo>', 'error');
+        currentDir[target] = { type: 'file', content: '' };
+        saveFileSystem();
+        printLine(`Archivo '${target}' creado.`);
+        break;
+
+      case 'cat':
+        if (!target || !currentDir[target]) return printLine(`cat: no existe '${target}'`, 'error');
+        printLine(currentDir[target].content || '(vacío)');
+        break;
+
+      case 'mv':
+        if (!target || !destination) return printLine('Uso: mv <origen> <nuevo>', 'error');
+        if (!currentDir[target]) return printLine(`mv: no existe '${target}'`, 'error');
+        currentDir[destination] = currentDir[target];
+        delete currentDir[target];
+        saveFileSystem();
+        printLine(`Renombrado '${target}' a '${destination}'`);
+        break;
+
+      case 'rm':
+        if (!target || !currentDir[target]) return printLine(`rm: no existe '${target}'`, 'error');
+        delete currentDir[target];
+        saveFileSystem();
+        printLine(`Eliminado '${target}'`);
+        break;
+
+      case 'clear':
+        history.innerHTML = '';
+        break;
+
+      case 'reset':
+        localStorage.removeItem('web_terminal_fs');
+        fileSystem = JSON.parse(JSON.stringify(initialFileSystem));
+        currentPath = ['~'];
+        updatePrompt();
+        printLine('Sistema reiniciado.');
+        break;
+
+      default:
+        printLine(`Comando no reconocido: '${cmd}'. Escribe 'help'.`, 'error');
+    }
+  }
+
+  function printLine(text, className = '') {
+    const div = document.createElement('div');
+    div.className = `output ${className}`;
+    div.textContent = text;
+    history.appendChild(div);
+  }
+
+  document.querySelector('.terminal').addEventListener('click', () => input.focus());
+</script>
+
+<script>
+  const emulator = new V86Starter({
+    wasm_path: "https://copy.sh/v86/build/v86.wasm",
+    memory_size: 128 * 1024 * 1024, // 128 MB RAM
+    vga_bios: { url: "https://copy.sh/v86/bios/vgabios.bin" },
+    bios: { url: "https://copy.sh/v86/bios/seabios.bin" },
+    cdrom: { url: "https://copy.sh/v86/images/debian-10-iso.iso" }, // O imagen de Alpine
+    autostart: true,
+  });
+</script>
+  
+</body>
+</html>
